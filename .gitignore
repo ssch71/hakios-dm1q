@@ -1,0 +1,11 @@
+# the vendor's, from your own phone: never in the repository (uefi/README.md, LEGAL.md)
+uefi/files/Binaries/dm1q/*
+!uefi/files/Binaries/dm1q/README.md
+uefi/files/Resources/DTBs/*.dtb
+firmware/
+*.img
+*.tar
+*.tar.md5
+*.lz4
+out/
+__pycache__/

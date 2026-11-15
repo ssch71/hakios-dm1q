@@ -135,7 +135,22 @@ firmware() {
 	fi
 }
 
+# Samsung (DEVICE=dm1q): no fastboot. The loader is in the recovery partition (devices/dm1q/tools/mkrecovery.py, flashed
+# with Odin by mkodin.sh), resident on USB: reaching it is a restart into recovery, and it then answers as "xnuloader".
+enter_samsung() {
+	case "$(state)" in
+	loader) return 0 ;;
+	android) adb reboot recovery ;;
+	*) echo "xl: $DEVICE: hold volume-up + power with the cable in (recovery = HakiOS's loader)" ;;
+	esac
+	wait_for loader 90 || { echo "xl: $DEVICE: the loader did not answer on USB (is HakiOS in recovery? devices/$DEVICE/README.md)"; return 1; }
+	rm -f $PHONE.ran
+}
+
 enter() {
+	case "${DEVICE:-redwood}" in
+	dm1q) enter_samsung; return ;;
+	esac
 	case "$(state)" in
 	loader) return 0 ;;
 	android) adb reboot bootloader; wait_for fastboot 60 || { echo "xl: phone did not reach fastboot"; return 1; } ;;

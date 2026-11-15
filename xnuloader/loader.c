@@ -261,15 +261,20 @@ clean_dcache(uint64_t start, uint64_t end)
 /* ------------------------------------------------------------------------ */
 /* Log persistence: raw write to a GPT partition (phone only)               */
 
+static const char16 *log_partition_name;   /* the platform's (struct platform, log_partition), set when it is chosen */
+
 static efi_block_io *
 find_log_partition(void)
 {
 	static const efi_guid part_guid = EFI_PARTITION_INFO_GUID;
 	static const efi_guid blk_guid = EFI_BLOCK_IO_GUID;
-	static const char16 want[] = LOG_PARTITION;
+	const char16 *want = log_partition_name;
 	efi_handle *handles;
 	uint64_t count;
 
+	if (want == NULL) {
+		return NULL;            /* this platform's log stays in memory (fastboot get_staged, the screen) */
+	}
 	if (EFI_ERROR(BS->locate_handle_buffer(ByProtocol, &part_guid, NULL, &count, &handles))) {
 		return NULL;
 	}
@@ -281,9 +286,12 @@ find_log_partition(void)
 		if (EFI_ERROR(BS->handle_protocol(handles[i], &part_guid, (void **)&info)) || info->type != 2) {
 			continue;
 		}
-		for (unsigned k = 0; k < sizeof(want) / sizeof(want[0]); k++) {
+		for (unsigned k = 0;; k++) {
 			if (info->name[k] != want[k]) {
 				match = 0;
+				break;
+			}
+			if (want[k] == 0) {
 				break;
 			}
 		}
@@ -561,6 +569,7 @@ struct platform {
 	int core_shift;                  /* ... in this bit of MPIDR: the phone numbers them in the second affinity field */
 	uint32_t timeout_scale;          /* a kernel on several cores gets this much longer to wait for a lock, 0: as it is */
 	uint32_t small_cores;            /* a bit for each of the slower cores, by number: "small-core" in the device tree */
+	const char16 *log_partition;     /* the GPT partition the run's log is written to, NULL: none (kept in memory) */
 };
 
 static const struct platform platform_qemu_virt = {
@@ -573,6 +582,7 @@ static const struct platform platform_qemu_virt = {
 	 * is that of real hardware: an eighth of a second by a 24 MHz clock, a twentieth here.
 	 */
 	.timeout_scale = 20,
+	.log_partition = LOG_PARTITION,
 };
 
 static const struct platform platform_redwood = {
@@ -586,6 +596,23 @@ static const struct platform platform_redwood = {
 	 * (XNU's machine_routines.c, ml_choose_slow_core_partners()).
 	 */
 	.small_cores = 0x0f,
+	.log_partition = LOG_PARTITION,
+};
+
+static const struct platform platform_dm1q = {
+	/*
+	 * Samsung Galaxy S23 (dm1q, SM8550 "kalama"), on Mu-Silicium's Kailua UEFI started from the recovery partition.
+	 * Where the numbers come from: the phone's own tree (interrupt-controller@17100000: GICD 0x17100000, GICR 0x17180000;
+	 * cpu@0..cpu@700, MPIDR in the second affinity field), the display's framebuffer of the dm1q UEFI (0xB8000000,
+	 * "Display Reserved" of its MemoryMapLib). Cores 0-2 are Cortex-A510, 3-6 Cortex-A715/A710, 7 the Cortex-X3.
+	 * No log partition: Samsung's layout is not Qualcomm's reference one, and nothing is written to its flash until
+	 * a partition has been chosen on the phone itself. Status: written, not yet run.
+	 */
+	.name = "dm1q", .io_base = 0x00400000, .io_size = 0x3FC00000,
+	.gic_dist = 0x17100000, .gic_redist = 0x17180000, .uart = 0, .log_other_cpu = 0,
+	.cores = 8, .core_shift = 8,
+	.small_cores = 0x07,
+	.log_partition = NULL,
 };
 
 /* ------------------------------------------------------------------------ */
@@ -4345,12 +4372,15 @@ efi_main(efi_handle image, efi_system_table *st)
 		SCREEN.stride = GOP->mode->info->pixels_per_scanline * 4;
 		if (SCREEN.base == 0xE1000000ULL) {
 			PLAT = &platform_redwood;
+		} else if (SCREEN.base == 0xB8000000ULL && SCREEN.width == 1080 && SCREEN.height == 2340) {
+			PLAT = &platform_dm1q;
 		} else {
 			ramfb_phone_screen();
 		}
 		print("display %d x %d at %x\n", (uint64_t)SCREEN.width, (uint64_t)SCREEN.height, SCREEN.base);
 	}
 	print("platform %s\n", PLAT->name);
+	log_partition_name = PLAT->log_partition;
 
 	install_exception_hook();
 	wdt_arm();
